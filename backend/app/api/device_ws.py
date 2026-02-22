@@ -180,7 +180,6 @@ async def ingest_device_payload(
             "type": "final",
             "encounter_id": eid,
             "source": data.get("source", default_source),
-            "transcript": data.get("transcript"),
             "timestamp": data.get("timestamp"),
         }
         _push_device_message(eid, final_msg)

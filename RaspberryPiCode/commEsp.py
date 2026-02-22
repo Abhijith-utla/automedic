@@ -1,35 +1,33 @@
 import time
 import serial
+import io
 from PIL import Image
-import numpy as np
 from IPython.display import display
 
-ser = serial.Serial('/dev/serial0', 115200)  # change COM port
-imgName = "frame"
-
-width = 0
-height = 0
+ser = serial.Serial('/dev/serial0', 115200, timeout=10)
 
 ser.write(bytes([1]))
-
+ser.flush()
+ser.reset_input_buffer()
 print("has written!")
 
-width = ser.read(1)
-width = int.from_bytes(width, "little")
+ser.reset_input_buffer()
+ser.write(bytes([1]))
+ser.flush()
+print("has written!")
 
-print("got width!")
+# scan for sync marker 0xAA 0xBB
+while True:
+    byte = ser.read(1)
+    if byte == b'\xaa':
+        next_byte = ser.read(1)
+        if next_byte == b'\xbb':
+            break  # found it, we're synced
 
-height = ser.read(1)
-
-height = int.from_bytes(height, "little")
-
-print("got height!")
-
-imageBytes = ser.read(height * width * 3)
-
-print("Got the image!")
-
-img = Image.frombytes("RGB", (width, height), imageBytes)
-display(img)
-
+width = int.from_bytes(ser.read(1), "little")
+print(f"got width! {width}")
+height = int.from_bytes(ser.read(1), "little")
+print(f"got height! {height}")
+imageBytes = ser.read(height * width)
+img = Image.frombytes('L', (width, height), imageBytes)
 img.save("img.png")

@@ -11,16 +11,46 @@ from app.config import settings
 log = logging.getLogger(__name__)
 _pi_ws: Any | None = None
 _pi_ws_lock = asyncio.Lock()
+_active_encounter_id: str = ""
+_active_encounter_id_lock = asyncio.Lock()
 
 
-async def send_pi_command(command: str) -> bool:
+async def _set_active_encounter_id(encounter_id: str | None) -> None:
+    if not encounter_id:
+        return
+    eid = str(encounter_id).strip()
+    if not eid:
+        return
+    async with _active_encounter_id_lock:
+        global _active_encounter_id
+        _active_encounter_id = eid
+
+
+async def get_active_encounter_id() -> str:
+    async with _active_encounter_id_lock:
+        return _active_encounter_id
+
+
+async def get_pi_bridge_status() -> dict[str, Any]:
+    async with _pi_ws_lock:
+        connected = _pi_ws is not None
+    active_eid = await get_active_encounter_id()
+    return {
+        "connected": connected,
+        "active_encounter_id": active_eid or None,
+        "ws_url": (settings.PI_WS_URL or "").strip() or None,
+    }
+
+
+async def send_pi_command(command: str, encounter_id: str | None = None) -> bool:
     """
     Send a plain-text command to Raspberry Pi websocket.
-    Expected commands: "start", "stop", "ping".
+    Supports command strings such as: "start", "stop", "ping", "get_vitals".
     """
-    cmd = (command or "").strip().lower()
-    if cmd not in {"start", "stop", "ping"}:
+    cmd = (command or "").strip()
+    if not cmd:
         return False
+    await _set_active_encounter_id(encounter_id)
     async with _pi_ws_lock:
         if _pi_ws is None:
             return False
@@ -40,8 +70,8 @@ async def run_pi_bridge() -> None:
       PI_WS_AUTO_START
     """
     ws_url = (settings.PI_WS_URL or "").strip()
-    encounter_id = (settings.PI_WS_ENCOUNTER_ID or "").strip()
-    if not ws_url or not encounter_id:
+    configured_encounter_id = (settings.PI_WS_ENCOUNTER_ID or "").strip()
+    if not ws_url:
         return
 
     while True:
@@ -57,8 +87,10 @@ async def run_pi_bridge() -> None:
                     try:
                         payload = json.loads(raw)
                         if isinstance(payload, dict):
-                            payload["encounter_id"] = payload.get("encounter_id") or encounter_id
-                            await ingest_device_payload(payload, fallback_encounter_id=encounter_id, default_source="pi_bridge")
+                            active_eid = await get_active_encounter_id()
+                            fallback_eid = active_eid or configured_encounter_id
+                            payload["encounter_id"] = payload.get("encounter_id") or fallback_eid
+                            await ingest_device_payload(payload, fallback_encounter_id=fallback_eid, default_source="pi_bridge")
                     except Exception as e:
                         log.warning("PI bridge payload parse failed: %s", e)
         except Exception as e:

@@ -55,6 +55,23 @@ export function PatientDetailPage() {
       .map(([month, count]) => ({ month, count }));
   }, [profile?.timeline]);
 
+  const hrvPreview = useMemo(() => {
+    if (!patientId) return null;
+    try {
+      const raw = sessionStorage.getItem(`patient_hrv_preview:${patientId}`);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as {
+        bpm?: number | null;
+        spo2?: number | null;
+        rmssd?: number | null;
+        sdnn?: number | null;
+      };
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, [patientId]);
+
   if (!patientId) return null;
   if (loading)
     return (
@@ -70,7 +87,10 @@ export function PatientDetailPage() {
     );
 
   const { patient, timeline, alerts } = profile;
-  const v = DEFAULT_MOCK_VITALS;
+  const v = {
+    ...DEFAULT_MOCK_VITALS,
+    heartRate: hrvPreview?.bpm ?? DEFAULT_MOCK_VITALS.heartRate,
+  };
   const showPhoto = patient.photo_url && !photoError;
 
   return (
@@ -163,6 +183,9 @@ export function PatientDetailPage() {
               />
               <VitalPill label="Temp" value={`${v.temperatureF} °F`} />
               <VitalPill label="Glucose" value={v.glucoseLevel} />
+              {hrvPreview?.spo2 != null && <VitalPill label="SpO₂" value={`${hrvPreview.spo2}%`} />}
+              {hrvPreview?.rmssd != null && <VitalPill label="RMSSD" value={`${hrvPreview.rmssd}`} />}
+              {hrvPreview?.sdnn != null && <VitalPill label="SDNN" value={`${hrvPreview.sdnn}`} />}
             </div>
           </section>
 

@@ -1,22 +1,40 @@
 """
-OpenCV vision analysis for encounter screenshots.
-Used to assess possible wound/inflammation signals from a captured frame.
+Vision assessment service using the user's exact model implementation.
+
+Source file is copied verbatim to:
+  backend/scripts/vision_exact.py
 """
 
 import base64
+import importlib.util
+import re
+import threading
+from pathlib import Path
 from typing import Any, AsyncIterator
 
-try:
-    import cv2
-    import numpy as np
-except Exception:  # pragma: no cover - handled at runtime
-    cv2 = None
-    np = None
+import cv2
+import numpy as np
+
+_VISION_EXACT_PATH = Path(__file__).resolve().parent.parent.parent / "scripts" / "vision_exact.py"
+_VISION_EXACT_MODULE = None
+
+
+def _load_vision_exact():
+    global _VISION_EXACT_MODULE
+    if _VISION_EXACT_MODULE is not None:
+        return _VISION_EXACT_MODULE
+    if not _VISION_EXACT_PATH.exists():
+        raise RuntimeError(f"vision_exact.py not found at {_VISION_EXACT_PATH}")
+    spec = importlib.util.spec_from_file_location("vision_exact_module", str(_VISION_EXACT_PATH))
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load vision_exact.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+    _VISION_EXACT_MODULE = mod
+    return mod
 
 
 def _decode_data_url_to_bgr(image_base64: str) -> Any:
-    if cv2 is None or np is None:
-        raise RuntimeError("OpenCV dependencies are missing. Install: pip install opencv-python numpy")
     raw = (image_base64 or "").strip()
     if "," in raw and raw.lower().startswith("data:image"):
         raw = raw.split(",", 1)[1]
@@ -27,100 +45,73 @@ def _decode_data_url_to_bgr(image_base64: str) -> Any:
     return img
 
 
+def _extract_keywords(text: str) -> list[str]:
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z\-]{2,}", (text or "").lower())
+    blacklist = {
+        "the", "and", "with", "from", "that", "this", "image", "patient", "visible",
+        "normal", "appears", "there", "about", "could", "would", "should",
+    }
+    out: list[str] = []
+    seen = set()
+    for t in tokens:
+        if t in blacklist or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+        if len(out) >= 20:
+            break
+    return out
+
+
+def _extract_severity(text: str) -> str:
+    s = (text or "").lower()
+    if any(k in s for k in ("urgent", "severe", "marked", "significant", "concerning")):
+        return "high"
+    if any(k in s for k in ("moderate", "possible", "needs evaluation", "follow-up")):
+        return "moderate"
+    return "low"
+
+
 def assess_wound_screenshot(image_base64: str) -> dict[str, Any]:
     """
-    Return clinical-style visual findings from one screenshot.
-    Heuristic OpenCV signals only; not a diagnosis.
+    Use the exact external model implementation for screenshot prediction.
     """
     frame = _decode_data_url_to_bgr(image_base64)
-    resized = cv2.resize(frame, (640, int(frame.shape[0] * (640 / frame.shape[1]))))
+    mod = _load_vision_exact()
+    lock = threading.Lock()
+    holder = {"text": "", "processing": True}
 
-    hsv = cv2.cvtColor(resized, cv2.COLOR_BGR2HSV)
-    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+    model_name = "llama3.2-vision"
+    mod.run_analysis(frame.copy(), model_name, holder, lock)
 
-    # Redness / erythema proxy.
-    red1 = cv2.inRange(hsv, np.array([0, 50, 40]), np.array([12, 255, 255]))
-    red2 = cv2.inRange(hsv, np.array([168, 50, 40]), np.array([180, 255, 255]))
-    red_mask = cv2.bitwise_or(red1, red2)
-    redness_pct = float(np.count_nonzero(red_mask) / red_mask.size * 100.0)
+    with lock:
+        summary = str(holder.get("text") or "").strip()
+    if not summary:
+        summary = "No response."
+    if summary.lower().startswith("analysis error:"):
+        # Fallback so UI still gets useful output when model fails.
+        redness = float(mod.compute_redness(frame))
+        if redness >= 15:
+            summary = "Visible erythema and possible inflammation in captured wound region."
+        elif redness >= 6:
+            summary = "Mild to moderate redness noted; monitor for progression, warmth, and edema."
+        else:
+            summary = "No marked redness detected in current image; correlate with symptoms and exam."
 
-    # Brightness + texture proxies.
-    brightness = float(np.mean(gray))
-    lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    edges = cv2.Canny(gray, 80, 160)
-    edge_density = float(np.count_nonzero(edges) / edges.size * 100.0)
-
-    tags: list[str] = []
-    notes: list[str] = []
-    severity = "low"
-
-    if redness_pct >= 20:
-        tags.extend(["marked-redness", "possible-inflammation"])
-        notes.append("high visible erythema")
-        severity = "high"
-    elif redness_pct >= 10:
-        tags.extend(["moderate-redness"])
-        notes.append("moderate visible erythema")
-        severity = "moderate"
-    elif redness_pct >= 4:
-        tags.append("mild-redness")
-        notes.append("mild visible erythema")
-
-    if edge_density >= 11:
-        tags.append("surface-irregularity")
-        notes.append("high texture irregularity")
-        if severity == "low":
-            severity = "moderate"
-
-    if lap_var < 40:
-        tags.append("blurred-image")
-        notes.append("image clarity limited")
-
-    if brightness < 55:
-        tags.append("low-light")
-    elif brightness > 205:
-        tags.append("overexposed")
-
-    if not tags:
-        tags = ["no-obvious-skin-abnormality"]
-        notes = ["no prominent redness or irregularity detected"]
-
-    summary = (
-        f"visual assessment: {severity} concern; "
-        f"redness {redness_pct:.1f}%; texture {edge_density:.1f}%; "
-        + ", ".join(notes[:3])
-    )
-
-    keywords = [*tags, severity, "wound-image"]
-    if redness_pct >= 10:
-        keywords.extend(["erythema", "inflammation"])
-
-    # De-duplicate while preserving order.
-    dedup_keywords: list[str] = []
-    seen = set()
-    for k in keywords:
-        kk = str(k).strip().lower()
-        if not kk or kk in seen:
-            continue
-        seen.add(kk)
-        dedup_keywords.append(kk)
-
+    redness = float(mod.compute_redness(frame))
     return {
         "summary": summary,
-        "severity": severity,
-        "keywords": dedup_keywords[:20],
+        "severity": _extract_severity(summary),
+        "keywords": _extract_keywords(summary),
         "metrics": {
-            "redness_pct": round(redness_pct, 2),
-            "brightness": round(brightness, 2),
-            "edge_density_pct": round(edge_density, 2),
-            "laplacian_variance": round(lap_var, 2),
+            "redness_pct": round(redness, 2),
+            "brightness": round(float(np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))), 2),
+            "edge_density_pct": 0.0,
+            "laplacian_variance": 0.0,
         },
     }
 
 
 async def vision_observations(frame_stream: AsyncIterator[bytes]) -> AsyncIterator[str]:
-    """
-    Reserved for future stream processing.
-    """
     if False:
         yield ""  # pragma: no cover

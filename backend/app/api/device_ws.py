@@ -19,6 +19,10 @@ Example from Raspberry Pi (Python):
 """
 
 import json
+import asyncio
+import time
+import math
+from uuid import uuid4
 from collections import defaultdict
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -35,6 +39,23 @@ _monitor_clients: dict[str, set[WebSocket]] = defaultdict(set)
 BUFFER_MAX = 100
 
 
+def _safe_number(value: Any) -> float | int | None:
+    """Convert NaN/inf/non-numeric values to None for JSON-safe payloads."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        num = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(num):
+        return None
+    if num.is_integer():
+        return int(num)
+    return num
+
+
 def _enc_id(msg: dict[str, Any], fallback: str | None = None) -> str:
     raw = msg.get("encounter_id") or fallback
     return str(raw).strip() if raw else ""
@@ -46,13 +67,13 @@ def _normalize_vitals_payload(msg: dict[str, Any]) -> dict[str, Any]:
     Supports keys from Raspberry Pi payloads:
       heart_rate/hr/bpm, spo2/oxy, hrv, rr_intervals_ms, sdnn, rmssd, pnn50, text, images...
     """
-    heart_rate = msg.get("heart_rate", msg.get("hr", msg.get("bpm")))
-    spo2 = msg.get("spo2", msg.get("oxy", msg.get("oxygen_sat")))
-    hrv = msg.get("hrv")
+    heart_rate = _safe_number(msg.get("heart_rate", msg.get("hr", msg.get("bpm"))))
+    spo2 = _safe_number(msg.get("spo2", msg.get("oxy", msg.get("oxygen_sat"))))
+    hrv = _safe_number(msg.get("hrv"))
     rr_intervals_ms = msg.get("rr_intervals_ms")
-    sdnn = msg.get("sdnn")
-    rmssd = msg.get("rmssd")
-    pnn50 = msg.get("pnn50")
+    sdnn = _safe_number(msg.get("sdnn"))
+    rmssd = _safe_number(msg.get("rmssd"))
+    pnn50 = _safe_number(msg.get("pnn50"))
     return {
         "type": "vitals",
         "encounter_id": msg.get("encounter_id"),
@@ -76,12 +97,12 @@ def _normalize_pi_hrv_payload(msg: dict[str, Any]) -> dict[str, Any]:
         "type": "vitals",
         "encounter_id": msg.get("encounter_id"),
         "source": msg.get("source", "pi"),
-        "heart_rate": data.get("bpm"),
-        "spo2": data.get("spo2"),
-        "hrv": data.get("hrv"),
-        "rmssd": data.get("rmssd"),
-        "sdnn": data.get("sdnn"),
-        "pnn50": data.get("pnn50"),
+        "heart_rate": _safe_number(data.get("bpm")),
+        "spo2": _safe_number(data.get("spo2")),
+        "hrv": _safe_number(data.get("hrv")),
+        "rmssd": _safe_number(data.get("rmssd")),
+        "sdnn": _safe_number(data.get("sdnn")),
+        "pnn50": _safe_number(data.get("pnn50")),
         "ts": msg.get("timestamp") or msg.get("ts"),
     }
 
@@ -127,19 +148,30 @@ async def ingest_device_payload(
 
     if msg_type == "hrv_complete":
         final_hrv = data.get("hrv") if isinstance(data.get("hrv"), dict) else {}
+        safe_final_hrv = {
+            "bpm": _safe_number(final_hrv.get("bpm")),
+            "spo2": _safe_number(final_hrv.get("spo2")),
+            "rmssd": _safe_number(final_hrv.get("rmssd")),
+            "sdnn": _safe_number(final_hrv.get("sdnn")),
+            "hrv": _safe_number(final_hrv.get("hrv")),
+            "pnn50": _safe_number(final_hrv.get("pnn50")),
+        }
         normalized = _normalize_vitals_payload({
             "type": "vitals",
             "encounter_id": eid,
             "source": data.get("source", default_source),
-            "heart_rate": final_hrv.get("bpm"),
-            "spo2": final_hrv.get("spo2"),
-            "rmssd": final_hrv.get("rmssd"),
-            "sdnn": final_hrv.get("sdnn"),
-            "hrv": final_hrv.get("hrv"),
+            "heart_rate": safe_final_hrv.get("bpm"),
+            "spo2": safe_final_hrv.get("spo2"),
+            "rmssd": safe_final_hrv.get("rmssd"),
+            "sdnn": safe_final_hrv.get("sdnn"),
+            "hrv": safe_final_hrv.get("hrv"),
             "ts": data.get("timestamp"),
         })
         _push_device_message(eid, normalized)
-        await _broadcast_to_monitors(eid, {"type": "hrv_complete", "encounter_id": eid, "hrv": final_hrv, "timestamp": data.get("timestamp")})
+        await _broadcast_to_monitors(
+            eid,
+            {"type": "hrv_complete", "encounter_id": eid, "hrv": safe_final_hrv, "timestamp": data.get("timestamp")},
+        )
         await _broadcast_to_monitors(eid, normalized)
         return {"ok": True, "received_type": "hrv_complete", "encounter_id": eid}
 
@@ -250,6 +282,11 @@ def get_latest_vitals(encounter_id: str) -> dict[str, Any] | None:
 
 class DeviceCommandRequest(BaseModel):
     command: str
+    encounter_id: str | None = None
+
+
+class CollectVitalsRequest(BaseModel):
+    timeout_sec: int = 10
 
 
 @router.post("/device/command")
@@ -263,7 +300,82 @@ async def send_device_command(
     """
     from app.services.pi_bridge import send_pi_command
 
-    ok = await send_pi_command(body.command)
+    ok = await send_pi_command(body.command, encounter_id=body.encounter_id)
     if not ok:
         raise HTTPException(status_code=503, detail="Raspberry Pi bridge is not connected")
     return {"ok": True, "command": body.command.strip().lower()}
+
+
+@router.post("/device/collect-vitals-preview")
+async def collect_vitals_preview(
+    body: CollectVitalsRequest,
+    _user_id: str = Depends(get_current_user_id),
+):
+    """
+    Trigger short HRV/vitals collection from Pi via one websocket command.
+    Primary command: "get_vitals". Fallback: "start" -> wait -> "stop".
+    """
+    from app.services.pi_bridge import send_pi_command
+
+    timeout = max(3, min(int(body.timeout_sec or 10), 30))
+    encounter_id = str(uuid4())
+
+    started = await send_pi_command("get_vitals", encounter_id=encounter_id)
+    if not started:
+        raise HTTPException(status_code=503, detail="Raspberry Pi bridge is not connected")
+
+    t0 = time.time()
+    final_hrv: dict[str, Any] | None = None
+    latest: dict[str, Any] | None = None
+    while time.time() - t0 < timeout + 2:
+        msgs = get_last_device_messages(encounter_id, limit=40)
+        for m in reversed(msgs):
+            if isinstance(m, dict) and m.get("type") == "hrv_complete" and isinstance(m.get("hrv"), dict):
+                final_hrv = m.get("hrv")
+                break
+        latest = get_latest_vitals(encounter_id)
+        if final_hrv or latest:
+            break
+        await asyncio.sleep(0.25)
+
+    # Compatibility fallback for older Pi scripts (start/stop pattern).
+    if not final_hrv and not latest:
+        started_fallback = await send_pi_command("start", encounter_id=encounter_id)
+        if started_fallback:
+            await asyncio.sleep(15)
+            await send_pi_command("stop", encounter_id=encounter_id)
+            t1 = time.time()
+            while time.time() - t1 < timeout:
+                msgs = get_last_device_messages(encounter_id, limit=40)
+                for m in reversed(msgs):
+                    if isinstance(m, dict) and m.get("type") == "hrv_complete" and isinstance(m.get("hrv"), dict):
+                        final_hrv = m.get("hrv")
+                        break
+                latest = get_latest_vitals(encounter_id)
+                if final_hrv or latest:
+                    break
+                await asyncio.sleep(0.25)
+
+    if not final_hrv and not latest:
+        raise HTTPException(
+            status_code=504,
+            detail="No vitals received from Raspberry Pi. Ensure Pi handles 'get_vitals' (or start/stop), and websocket route is reachable.",
+        )
+
+    return {
+        "ok": True,
+        "encounter_id": encounter_id,
+        "duration_sec": 15,
+        "final_hrv": final_hrv,
+        "latest_vitals": latest,
+    }
+
+
+@router.get("/device/status")
+async def device_status(
+    _user_id: str = Depends(get_current_user_id),
+):
+    from app.services.pi_bridge import get_pi_bridge_status
+
+    status = await get_pi_bridge_status()
+    return {"ok": True, "pi_bridge": status}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { listPatients, createPatient, type PatientListItem } from "@/api/client";
+import { collectVitalsPreview, listPatients, createPatient, type PatientListItem } from "@/api/client";
 
 function getInitials(name: string): string {
   return name
@@ -25,6 +25,7 @@ function formatLastVisit(iso: string | undefined): string {
 
 export function PatientsPage() {
   const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const [patients, setPatients] = useState<PatientListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
@@ -35,6 +36,15 @@ export function PatientsPage() {
   const [newPhone, setNewPhone] = useState("");
   const [adding, setAdding] = useState(false);
   const [photoErrors, setPhotoErrors] = useState<Set<string>>(new Set());
+  const [selectedPatient, setSelectedPatient] = useState<PatientListItem | null>(null);
+  const [collectingVitals, setCollectingVitals] = useState(false);
+  const [collectError, setCollectError] = useState("");
+  const [collectResult, setCollectResult] = useState<{
+    bpm?: number | null;
+    spo2?: number | null;
+    rmssd?: number | null;
+    sdnn?: number | null;
+  } | null>(null);
 
   const filteredPatients = useMemo(() => {
     if (!search.trim()) return patients;
@@ -88,6 +98,48 @@ export function PatientsPage() {
       await load();
     } finally {
       setAdding(false);
+    }
+  };
+
+  const openPatientModal = (patient: PatientListItem) => {
+    setSelectedPatient(patient);
+    setCollectingVitals(false);
+    setCollectError("");
+    setCollectResult(null);
+  };
+
+  const goToProfile = () => {
+    if (!selectedPatient) return;
+    navigate(`/patients/${selectedPatient.id}`);
+  };
+
+  const runVitalsCollection = async () => {
+    setCollectingVitals(true);
+    setCollectError("");
+    try {
+      const result = await collectVitalsPreview(15);
+      const final = result.final_hrv || {};
+      const latest = result.latest_vitals || {};
+      const resolved = {
+        bpm: final.bpm ?? latest.heart_rate ?? null,
+        spo2: final.spo2 ?? latest.spo2 ?? null,
+        rmssd: final.rmssd ?? latest.rmssd ?? null,
+        sdnn: final.sdnn ?? latest.sdnn ?? null,
+      };
+      setCollectResult(resolved);
+      if (selectedPatient) {
+        sessionStorage.setItem(
+          `patient_hrv_preview:${selectedPatient.id}`,
+          JSON.stringify({
+            ...resolved,
+            captured_at: new Date().toISOString(),
+          })
+        );
+      }
+    } catch (e) {
+      setCollectError(e instanceof Error ? e.message : "Vitals collection failed");
+    } finally {
+      setCollectingVitals(false);
     }
   };
 
@@ -243,9 +295,10 @@ export function PatientsPage() {
                     ? `${p.encounter_count} record${p.encounter_count !== 1 ? "s" : ""}${lastVisit ? ` · Last visit ${lastVisit}` : ""}`
                     : "No records yet";
               return (
-                <Link
+                <button
                   key={p.id}
-                  to={`/patients/${p.id}`}
+                  type="button"
+                  onClick={() => openPatientModal(p)}
                   className="group flex items-center gap-4 rounded-2xl border border-clinical-border bg-white p-5 shadow-sm transition-all hover:border-clinical-primary/30 hover:shadow-md"
                 >
                   <div className="relative flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-clinical-primary/5 text-base font-semibold text-clinical-primary ring-1 ring-clinical-border/50">
@@ -276,9 +329,69 @@ export function PatientsPage() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                     </svg>
                   </span>
-                </Link>
+                </button>
               );
             })}
+          </div>
+        )}
+
+        {selectedPatient && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="w-full max-w-lg rounded-2xl border border-clinical-border bg-white p-6 shadow-xl">
+              <h3 className="text-lg font-semibold text-gray-900">Before opening profile</h3>
+              <p className="mt-1 text-sm text-clinical-muted">
+                {selectedPatient.name}: collect vitals from HRV sensor for 15 seconds?
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={runVitalsCollection}
+                  disabled={collectingVitals}
+                  className="rounded-lg bg-clinical-primary px-4 py-2 text-sm font-medium text-white hover:bg-clinical-primary/90 disabled:opacity-50"
+                >
+                  {collectingVitals ? "Collecting vitals..." : "Collect vitals (15s)"}
+                </button>
+                <button
+                  type="button"
+                  onClick={goToProfile}
+                  disabled={collectingVitals}
+                  className="rounded-lg border border-clinical-border bg-white px-4 py-2 text-sm font-medium text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+                >
+                  Skip and open profile
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPatient(null)}
+                  disabled={collectingVitals}
+                  className="rounded-lg px-3 py-2 text-sm text-clinical-muted hover:text-gray-900 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              </div>
+              {collectError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                  {collectError}
+                </div>
+              )}
+              {collectResult && (
+                <div className="mt-4 rounded-lg border border-clinical-border bg-clinical-surface p-3 text-sm">
+                  <div className="font-medium text-gray-900 mb-2">Vitals collected</div>
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div className="rounded border border-gray-200 bg-white px-2 py-1">BPM: {collectResult.bpm ?? "—"}</div>
+                    <div className="rounded border border-gray-200 bg-white px-2 py-1">SpO₂: {collectResult.spo2 ?? "—"}</div>
+                    <div className="rounded border border-gray-200 bg-white px-2 py-1">RMSSD: {collectResult.rmssd ?? "—"}</div>
+                    <div className="rounded border border-gray-200 bg-white px-2 py-1">SDNN: {collectResult.sdnn ?? "—"}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={goToProfile}
+                    className="mt-3 rounded-lg bg-black px-4 py-2 text-sm font-medium text-white hover:bg-gray-800"
+                  >
+                    Continue to patient profile
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

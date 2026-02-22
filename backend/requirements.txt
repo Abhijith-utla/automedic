@@ -4,7 +4,7 @@
 fastapi==0.109.2
 uvicorn[standard]==0.27.1
 python-multipart==0.0.9
-pydantic==2.6.1
+pydantic==2.12.5
 pydantic-settings==2.1.0
 websockets==12.0
 sqlalchemy==2.0.25
@@ -16,9 +16,11 @@ sendgrid>=6.11.0
 # Optional: for clinical triage pipeline (USE_TRIAGE_PIPELINE=1). Enables Agent 1→2 context via LangChain.
 # Without it, triage_pipeline falls back to raw Ollama API.
 langchain-ollama>=0.1.0
+ollama>=0.6.1
 
 # Optional (placeholders; uncomment when integrating real services)
 # openai-whisper
 # torch
 # transformers
-# opencv-python
+numpy>=2.2.6
+opencv-python>=4.13.0.92

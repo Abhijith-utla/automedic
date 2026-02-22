@@ -226,12 +226,37 @@ export function getDeviceMonitorWsUrl(encounterId: string): string {
   return `${proto}//${host}/api/ws/device/monitor?encounter_id=${encodeURIComponent(encounterId)}`;
 }
 
-export async function sendDeviceCommand(command: "start" | "stop" | "ping"): Promise<{ ok: boolean; command: string }> {
+export async function sendDeviceCommand(command: "start" | "stop" | "ping" | "get_vitals"): Promise<{ ok: boolean; command: string }> {
   const res = await fetch(`${BASE}/api/device/command`, {
     method: "POST",
     credentials: CREDS,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ command }),
+  });
+  if (!res.ok) throw new Error(await authError(res));
+  return res.json();
+}
+
+export async function collectVitalsPreview(
+  timeoutSec = 10
+): Promise<{
+  ok: boolean;
+  encounter_id: string;
+  duration_sec: number;
+  final_hrv?: { bpm?: number; spo2?: number; rmssd?: number; sdnn?: number } | null;
+  latest_vitals?: {
+    heart_rate?: number | null;
+    spo2?: number | null;
+    hrv?: number | null;
+    rmssd?: number | null;
+    sdnn?: number | null;
+  } | null;
+}> {
+  const res = await fetch(`${BASE}/api/device/collect-vitals-preview`, {
+    method: "POST",
+    credentials: CREDS,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ timeout_sec: timeoutSec }),
   });
   if (!res.ok) throw new Error(await authError(res));
   return res.json();

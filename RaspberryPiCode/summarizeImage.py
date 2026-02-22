@@ -3,8 +3,8 @@ from PIL import Image
 import torch
 
 # Load BLIP processor and model
-processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+processor = BlipProcessor.from_pretrained("VisionModel", local_files_only=True, trust_remote_code=True)
+model = BlipForConditionalGeneration.from_pretrained("VisionModel", local_files_only=True, trust_remote_code=True)
 
 # Load your image
 image = Image.open("iStock-490287154_480x480.webp").convert("RGB")

@@ -1,7 +1,8 @@
 /.history
 /Pictures
 /SynPain_Part1
-bartDistill/pytorch_model.bin
+RaspberryPiCode/bartDistill/pytorch_model.bin
+RaspberryPiCode/VisionModel/pytorch_model.bin
 fer2013.csv
 
 VisionModel/pytorch_model.bin

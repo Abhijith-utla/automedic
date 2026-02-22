@@ -2,8 +2,8 @@ import subprocess
 import time
 
 OUTPUT_FILE = "bt_recording.wav"
-DURATION    = 5  # seconds
-SOURCE      = "bluez_input.41:42:FF:92:67:7E"
+DURATION    = 15  # seconds
+SOURCE      = "bluez_input.AC:12:2F:70:12:65"
 
 print(f"Recording for {DURATION} seconds... speak now!")
 

@@ -97,6 +97,18 @@ async def handler(websocket):
                 is_running = False
                 if collect_task:
                     collect_task.cancel()
+            
+                # Calculate final HRV from all collected data
+                hrv = calculate_hrv(ir_buf, red_buf)
+            
+                final_payload = json.dumps({
+                    "type"     : "final",
+                    "hrv"      : hrv,
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "samples_collected": len(ir_buf)
+                })
+            
+                await websocket.send(final_payload)
                 await websocket.send(json.dumps({
                     "type"   : "status",
                     "message": "Recording stopped"

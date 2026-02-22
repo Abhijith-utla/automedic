@@ -1,0 +1,14 @@
+{
+  "heart_rate_bpm": 53.0,
+  "spo2_percent": 85.2,
+  "rmssd_ms": 876.4,
+  "lf_hf_ratio": null,
+  "sdnn_ms": 681.8,
+  "respiratory_rate": 11.8,
+  "clinical_flags": [
+    "Low SpO2 - hypoxemia concern",
+    "CRITICAL: SpO2 below 90%",
+    "Low respiratory rate"
+  ],
+  "timestamp": "2026-02-22 04:37:42"
+}

@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  min-height: 100vh;
+}
+
+body {
+  @apply bg-clinical-bg text-gray-800 font-sans antialiased;
+}
+
+/* Minimal scrollbar */
+.scroll-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scroll-thin::-webkit-scrollbar-track {
+  @apply bg-clinical-border/50 rounded-full;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  @apply bg-clinical-muted/60 rounded-full;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.animate-fade-in {
+  animation: fade-in 0.25s ease-out;
+}

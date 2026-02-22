@@ -1,0 +1,24 @@
+# Automedic Backend — Diagnostic Assistant API
+# Python 3.11+
+
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+python-multipart==0.0.9
+pydantic==2.6.1
+pydantic-settings==2.1.0
+websockets==12.0
+sqlalchemy==2.0.25
+bcrypt>=4.0.0
+python-jose[cryptography]==3.3.0
+email-validator>=2.1.1
+sendgrid>=6.11.0
+
+# Optional: for clinical triage pipeline (USE_TRIAGE_PIPELINE=1). Enables Agent 1→2 context via LangChain.
+# Without it, triage_pipeline falls back to raw Ollama API.
+langchain-ollama>=0.1.0
+
+# Optional (placeholders; uncomment when integrating real services)
+# openai-whisper
+# torch
+# transformers
+# opencv-python

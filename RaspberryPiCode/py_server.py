@@ -4,7 +4,6 @@ import smbus2
 import numpy as np
 from scipy.signal import butter, filtfilt, find_peaks
 import json
-import base64
 import time
 import subprocess
 import speech_recognition as sr
@@ -72,12 +71,9 @@ async def handler(websocket):
         nonlocal proc, audio_file_f
         audio_file_f = open("raw_audio.pcm", "wb")
         proc = subprocess.Popen([
-            "parec",
-            "--device", SOURCE,
-            "--format=s16le",
-            "--rate=48000",
-            "--channels=1",
-            "--latency-msec=1"
+            "parec", "--device", SOURCE,
+            "--format=s16le", "--rate=48000",
+            "--channels=1", "--latency-msec=1"
         ], stdout=audio_file_f)
 
     def stop_audio():
@@ -88,14 +84,10 @@ async def handler(websocket):
         if audio_file_f:
             audio_file_f.close()
             audio_file_f = None
-
         subprocess.run([
-            "ffmpeg", "-y",
-            "-f", "s16le",
-            "-ar", "48000",
-            "-ac", "1",
-            "-i", "raw_audio.pcm",
-            OUTPUT_FILE
+            "ffmpeg", "-y", "-f", "s16le",
+            "-ar", "48000", "-ac", "1",
+            "-i", "raw_audio.pcm", OUTPUT_FILE
         ], capture_output=True)
 
     def transcribe():
@@ -110,40 +102,41 @@ async def handler(websocket):
         except Exception as e:
             return f"Error: {e}"
 
-async def collect_and_send():
-    hrv_start = time.time()
-    hrv_done  = False
+    async def collect_and_send():
+        nonlocal is_running
+        hrv_start = time.time()
+        hrv_done  = False
 
-    while is_running:
-        now = time.time()
+        while is_running:
+            now = time.time()
 
-        if not hrv_done:
-            red, ir = read_sample()
-            ir_buf.append(ir)
-            red_buf.append(red)
-            ir_full.append(ir)
-            red_full.append(red)
+            if not hrv_done:
+                red, ir = read_sample()
+                ir_buf.append(ir)
+                red_buf.append(red)
+                ir_full.append(ir)
+                red_full.append(red)
 
-            if len(ir_buf) >= fs:
-                hrv = calculate_hrv(ir_buf, red_buf)
-                if hrv:
+                if len(ir_buf) >= fs:
+                    hrv = calculate_hrv(ir_buf, red_buf)
+                    if hrv:
+                        await websocket.send(json.dumps({
+                            "type": "hrv",
+                            "data": hrv
+                        }))
+                    ir_buf.clear()
+                    red_buf.clear()
+
+                if now - hrv_start >= 10:
+                    hrv_done  = True
+                    final_hrv = calculate_hrv(ir_full, red_full)
                     await websocket.send(json.dumps({
-                        "type": "hrv",
-                        "data": hrv
+                        "type"   : "hrv_complete",
+                        "hrv"    : final_hrv,
+                        "message": "HRV collection complete, audio still recording"
                     }))
-                ir_buf.clear()
-                red_buf.clear()
 
-            if now - hrv_start >= 10:
-                hrv_done  = True
-                final_hrv = calculate_hrv(ir_full, red_full)
-                await websocket.send(json.dumps({
-                    "type"   : "hrv_complete",
-                    "hrv"    : final_hrv,
-                    "message": "HRV collection complete, audio still recording"
-                }))
-
-        await asyncio.sleep(0.01)
+            await asyncio.sleep(0.01)
 
     try:
         async for message in websocket:
@@ -151,9 +144,11 @@ async def collect_and_send():
             print(f"Received: {command}")
 
             if command == "start":
-                is_running = True
-                ir_buf     = []
-                red_buf    = []
+                is_running   = True
+                ir_buf       = []
+                red_buf      = []
+                ir_full      = []
+                red_full     = []
                 start_audio()
                 collect_task = asyncio.create_task(collect_and_send())
                 await websocket.send(json.dumps({
@@ -186,12 +181,6 @@ async def collect_and_send():
         print("Backend disconnected")
         is_running = False
         stop_audio()
-        if collect_task:
-            collect_task.cancel()
-
-    except websockets.exceptions.ConnectionClosed:
-        print("Backend disconnected")
-        is_running = False
         if collect_task:
             collect_task.cancel()
 

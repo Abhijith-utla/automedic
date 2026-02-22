@@ -32,6 +32,8 @@ def bandpass_filter(data, lowcut=0.5, highcut=4.0, fs=100):
     return filtfilt(b, a, data)
 
 def calculate_hrv(ir_buffer, red_buffer, fs=100):
+    if len(ir_buffer) < 50:
+        return None
     ir_arr   = np.array(ir_buffer, dtype=float)
     red_arr  = np.array(red_buffer, dtype=float)
     filtered = bandpass_filter(ir_arr, fs=fs)
@@ -56,6 +58,8 @@ async def handler(websocket):
     is_running   = False
     ir_buf       = []
     red_buf      = []
+    ir_full      = []
+    red_full     = []
     fs           = 100
     proc         = None
     audio_file_f = None

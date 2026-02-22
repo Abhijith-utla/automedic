@@ -6,6 +6,8 @@ from scipy.signal import butter, filtfilt, find_peaks
 import json
 import base64
 import time
+import subprocess
+import speech_recognition as sr
 
 bus     = smbus2.SMBus(1)
 address = 0x57
@@ -51,19 +53,65 @@ def calculate_hrv(ir_buffer, red_buffer, fs=100):
 
 async def handler(websocket):
     print("Backend connected — waiting for commands...")
-    is_running = False
-    ir_buf     = []
-    red_buf    = []
-    fs         = 100
+    is_running   = False
+    ir_buf       = []
+    red_buf      = []
+    fs           = 100
+    proc         = None
+    audio_file_f = None
+    collect_task = None
+
+    SOURCE      = "bluez_input.AC:12:2F:70:12:65"
+    OUTPUT_FILE = "recording.wav"
+
+    def start_audio():
+        nonlocal proc, audio_file_f
+        audio_file_f = open("raw_audio.pcm", "wb")
+        proc = subprocess.Popen([
+            "parec",
+            "--device", SOURCE,
+            "--format=s16le",
+            "--rate=48000",
+            "--channels=1",
+            "--latency-msec=1"
+        ], stdout=audio_file_f)
+
+    def stop_audio():
+        nonlocal proc, audio_file_f
+        if proc:
+            proc.terminate()
+            proc = None
+        if audio_file_f:
+            audio_file_f.close()
+            audio_file_f = None
+
+        subprocess.run([
+            "ffmpeg", "-y",
+            "-f", "s16le",
+            "-ar", "48000",
+            "-ac", "1",
+            "-i", "raw_audio.pcm",
+            OUTPUT_FILE
+        ], capture_output=True)
+
+    def transcribe():
+        recognizer = sr.Recognizer()
+        try:
+            with sr.AudioFile(OUTPUT_FILE) as source:
+                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                audio = recognizer.record(source)
+            return recognizer.recognize_google(audio)
+        except sr.UnknownValueError:
+            return "Could not understand audio"
+        except Exception as e:
+            return f"Error: {e}"
 
     async def collect_and_send():
-        nonlocal ir_buf, red_buf
         while is_running:
             red, ir = read_sample()
             ir_buf.append(ir)
             red_buf.append(red)
 
-            # Send HRV every second (100 samples)
             if len(ir_buf) >= fs:
                 hrv = calculate_hrv(ir_buf, red_buf)
                 if hrv:
@@ -76,17 +124,16 @@ async def handler(websocket):
 
             await asyncio.sleep(0.01)
 
-    collect_task = None
-
     try:
         async for message in websocket:
             command = message.strip()
-            print(f"Received command: {command}")
+            print(f"Received: {command}")
 
             if command == "start":
-                is_running  = True
-                ir_buf      = []
-                red_buf     = []
+                is_running = True
+                ir_buf     = []
+                red_buf    = []
+                start_audio()
                 collect_task = asyncio.create_task(collect_and_send())
                 await websocket.send(json.dumps({
                     "type"   : "status",
@@ -97,21 +144,22 @@ async def handler(websocket):
                 is_running = False
                 if collect_task:
                     collect_task.cancel()
-            
-                # Calculate final HRV from all collected data
+
+                # Stop audio and transcribe
+                stop_audio()
+                print("Transcribing...")
+                transcript = await asyncio.get_event_loop().run_in_executor(
+                    None, transcribe
+                )
+
+                # Final HRV
                 hrv = calculate_hrv(ir_buf, red_buf)
-            
-                final_payload = json.dumps({
-                    "type"     : "final",
-                    "hrv"      : hrv,
-                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                    "samples_collected": len(ir_buf)
-                })
-            
-                await websocket.send(final_payload)
+
                 await websocket.send(json.dumps({
-                    "type"   : "status",
-                    "message": "Recording stopped"
+                    "type"      : "final",
+                    "hrv"       : hrv,
+                    "transcript": transcript,
+                    "timestamp" : time.strftime("%Y-%m-%d %H:%M:%S")
                 }))
 
             elif command == "ping":
@@ -119,6 +167,13 @@ async def handler(websocket):
                     "type"   : "status",
                     "message": "pong"
                 }))
+
+    except websockets.exceptions.ConnectionClosed:
+        print("Backend disconnected")
+        is_running = False
+        stop_audio()
+        if collect_task:
+            collect_task.cancel()
 
     except websockets.exceptions.ConnectionClosed:
         print("Backend disconnected")

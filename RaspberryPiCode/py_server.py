@@ -110,11 +110,19 @@ async def handler(websocket):
         except Exception as e:
             return f"Error: {e}"
 
-    async def collect_and_send():
-        while is_running:
+async def collect_and_send():
+    hrv_start = time.time()
+    hrv_done  = False
+
+    while is_running:
+        now = time.time()
+
+        if not hrv_done:
             red, ir = read_sample()
             ir_buf.append(ir)
             red_buf.append(red)
+            ir_full.append(ir)
+            red_full.append(red)
 
             if len(ir_buf) >= fs:
                 hrv = calculate_hrv(ir_buf, red_buf)
@@ -126,7 +134,16 @@ async def handler(websocket):
                 ir_buf.clear()
                 red_buf.clear()
 
-            await asyncio.sleep(0.01)
+            if now - hrv_start >= 10:
+                hrv_done  = True
+                final_hrv = calculate_hrv(ir_full, red_full)
+                await websocket.send(json.dumps({
+                    "type"   : "hrv_complete",
+                    "hrv"    : final_hrv,
+                    "message": "HRV collection complete, audio still recording"
+                }))
+
+        await asyncio.sleep(0.01)
 
     try:
         async for message in websocket:
@@ -148,20 +165,13 @@ async def handler(websocket):
                 is_running = False
                 if collect_task:
                     collect_task.cancel()
-
-                # Stop audio and transcribe
                 stop_audio()
                 print("Transcribing...")
                 transcript = await asyncio.get_event_loop().run_in_executor(
                     None, transcribe
                 )
-
-                # Final HRV
-                hrv = calculate_hrv(ir_buf, red_buf)
-
                 await websocket.send(json.dumps({
                     "type"      : "final",
-                    "hrv"       : hrv,
                     "transcript": transcript,
                     "timestamp" : time.strftime("%Y-%m-%d %H:%M:%S")
                 }))
